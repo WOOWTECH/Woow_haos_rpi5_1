@@ -1,51 +1,40 @@
 # ============================================================================
-# RPi5 HAOS config.txt for RS485 x2, RS232 x1, CAN bus x2
-# Location on HAOS: /mnt/boot/config.txt
+# RPi5 HAOS config.txt for Waveshare Isolated Industrial Interface Board
+# Board: RS232/RS485/CAN/CAN-FD Expansion Board
+# Location on HAOS: boot partition (mmcblk0p1) /config.txt
 # ============================================================================
 #
-# HARDWARE ASSUMPTION:
-#   - 2x RS485 transceivers (e.g., SP3485/MAX485) connected to UART1 and UART2
-#   - 1x RS232 transceiver (e.g., MAX3232) connected to UART3
-#   - 2x CAN bus controllers (MCP2515) connected via SPI0 CE0 and SPI0 CE1
+# VERIFIED HARDWARE:
+#   - 2x RS485: SC16IS752 + SP485 via SPI1 -> /dev/ttySC0, /dev/ttySC1
+#   - 1x RS232: SP3232EEN via UART0       -> /dev/ttyAMA0
+#   - 1x CAN:   MCP2515 + SN65HVD230 via SPI0 CE0 -> can1
+#   - 1x CAN FD: MCP2518FD + MCP2562FD via SPI0 CE1 -> can0
 #
-# RPi5 UART mapping:
-#   UART0 = /dev/ttyAMA0 (GPIO 14/15) - reserved for console/bluetooth
-#   UART1 = /dev/ttyAMA1 (GPIO 0/1)   - RS485 #1
-#   UART2 = /dev/ttyAMA2 (GPIO 4/5)   - RS485 #2
-#   UART3 = /dev/ttyAMA3 (GPIO 8/9)   - RS232
-#   UART4 = /dev/ttyAMA4 (GPIO 12/13) - available
-#
-# CAN bus mapping:
-#   SPI0 CE0 = can0 (INT on GPIO 25)
-#   SPI0 CE1 = can1 (INT on GPIO 24)
+# GPIO Pin Mapping:
+#   SC16IS752 INT = GPIO 25 (Pin 22)
+#   MCP2515 INT   = GPIO 23 (Pin 16)
+#   MCP2518FD INT = GPIO 24 (Pin 18)
+#   UART0 TX/RX   = GPIO 14/15 (Pin 8/10) - RS232
+#   SPI0 CE0       = GPIO 8 (Pin 24) - MCP2515
+#   SPI0 CE1       = GPIO 7 (Pin 26) - MCP2518FD
+#   SPI1 CE0       = GPIO 18 (Pin 12) - SC16IS752
 #
 # ============================================================================
 
-[all]
-# --- Enable UART ---
-enable_uart=1
+# --- Add these lines to config.txt (in the [all] section or before [cm4]) ---
 
-# --- Disable Bluetooth to free UART0 (optional, if using UART0) ---
-# dtoverlay=disable-bt
-
-# --- RS485 #1: Enable UART1 on GPIO 0/1 ---
-dtoverlay=uart1-pi5
-
-# --- RS485 #2: Enable UART2 on GPIO 4/5 ---
-dtoverlay=uart2-pi5
-
-# --- RS232: Enable UART3 on GPIO 8/9 ---
-dtoverlay=uart3-pi5
-
-# --- CAN Bus: Enable SPI ---
+# Enable SPI bus
 dtparam=spi=on
 
-# --- CAN #1: MCP2515 on SPI0 CE0, INT=GPIO25, 8MHz/12MHz/16MHz crystal ---
-# Adjust oscillator value to match your MCP2515 crystal frequency:
-#   8000000  = 8MHz
-#   12000000 = 12MHz (common on Waveshare HATs)
-#   16000000 = 16MHz
-dtoverlay=mcp2515-can0,oscillator=12000000,interrupt=25,spimaxfrequency=2000000
+# RS485 x2: SC16IS752 dual UART via SPI1
+dtoverlay=spi1-3cs
+dtoverlay=sc16is752-spi1,int_pin=25
 
-# --- CAN #2: MCP2515 on SPI0 CE1, INT=GPIO24 ---
-dtoverlay=mcp2515-can1,oscillator=12000000,interrupt=24,spimaxfrequency=2000000
+# CAN Classic: MCP2515 on SPI0 CE0, 16MHz oscillator, INT=GPIO23
+dtoverlay=mcp2515,spi0-0,oscillator=16000000,interrupt=23
+
+# CAN FD: MCP2518FD on SPI0 CE1, INT=GPIO24
+dtoverlay=mcp251xfd,spi0-1,interrupt=24
+
+# RS232: Enable UART0 on RPi5 (GPIO 14/15)
+dtoverlay=uart0-pi5
