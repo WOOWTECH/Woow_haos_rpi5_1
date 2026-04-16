@@ -18,6 +18,7 @@
 - [Usage / 使用方式](#usage--使用方式)
 - [Test Results / 測試結果](#test-results--測試結果)
 - [HA Integration / HA 整合](#ha-integration--ha-整合)
+- [Power Sequencer (RS232) / 電源時序器](#power-sequencer-rs232--電源時序器)
 - [Troubleshooting / 故障排除](#troubleshooting--故障排除)
 - [File Structure / 檔案結構](#file-structure--檔案結構)
 
@@ -589,6 +590,183 @@ docker run --rm --privileged --net=host alpine sh -c '
 
 ---
 
+## Power Sequencer (RS232) / 電源時序器
+
+This section documents controlling an **8-channel Power Sequencer** via RS232 (USB-to-RS232 adapter) as plug/switch entities in HA.
+
+本節說明如何透過 RS232（USB 轉 RS232 轉接器）控制 **8 通道電源時序器**，並在 HA 中顯示為插座/開關實體。
+
+### Connection / 連線方式
+
+```
+  RPi5 (HAOS)                    Power Sequencer
+  ┌──────────┐   USB-to-RS232    ┌──────────────┐
+  │          │   (Exar XR21B1411)│              │
+  │   USB ●──┼───────────────────┼── RS232 DB9  │
+  │          │   /dev/ttyUSB0    │              │
+  │          │                   │  8 Channels  │
+  │  HA Core │   9600 8N1       │  Ch1 ── AC/DC│
+  │          │   No flow ctrl    │  Ch2 ── AC/DC│
+  │          │                   │  ...         │
+  │          │                   │  Ch8 ── AC/DC│
+  └──────────┘                   └──────────────┘
+```
+
+| Item / 項目 | Value / 值 |
+|-------------|-----------|
+| USB Adapter / USB 轉接器 | Exar XR21B1411 |
+| Device Path / 裝置路徑 | `/dev/ttyUSB0` |
+| Stable Path / 穩定路徑 | `/dev/serial/by-id/usb-Exar_Corp._XR21B1411_R6534754471-if00-port0` |
+| Baud Rate / 鮑率 | 9600 |
+| Data Format / 資料格式 | 8N1 (8 data bits, no parity, 1 stop bit) |
+| Flow Control / 流量控制 | None / 無 |
+| Cable / 線材 | Straight-through (parallel) / 直連線 |
+
+### RS232 Protocol / RS232 協定
+
+6-byte hex command format / 6 位元組十六進位指令格式：
+
+```
+┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐
+│  Byte 1  │  Byte 2  │  Byte 3  │  Byte 4  │  Byte 5  │  Byte 6  │
+│  Header  │ Address  │ Reserved │ Channel  │  Action  │  Footer  │
+│   0x55   │ 01 ~ FF  │   0x00   │ (below)  │ (below)  │   0xAA   │
+└──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘
+```
+
+**Channel (Byte 4) / 通道：**
+
+| Value / 值 | Meaning / 意義 |
+|-----------|----------------|
+| `00` | All channels / 所有通道 |
+| `01`-`08` | Individual channel 1-8 / 個別通道 1-8 |
+| `0D` | Sequential control / 順序控制 |
+| `10` | Simultaneous all / 同步全部 |
+
+**Action (Byte 5) / 動作：**
+
+| Value / 值 | Meaning / 意義 |
+|-----------|----------------|
+| `F0` | Turn ON / 開啟 |
+| `F1` | Turn OFF / 關閉 |
+| `FA` | Read status / 讀取狀態 |
+| `FB` | Read address / 讀取地址 |
+| `F2` | Set address / 設定地址 |
+
+**Examples / 範例：**
+
+| Action / 動作 | Hex Command / 十六進位指令 |
+|--------------|--------------------------|
+| Ch1 ON / 通道1 開 | `55 01 00 01 F0 AA` |
+| Ch3 OFF / 通道3 關 | `55 01 00 03 F1 AA` |
+| All ON / 全部開 | `55 01 00 00 F0 AA` |
+| Sequential ON / 順序開 | `55 01 00 0D F0 AA` |
+| Simultaneous OFF / 同步全關 | `55 01 00 10 F1 AA` |
+
+### HA Setup (No Custom Component Needed) / HA 設定（不需自訂元件）
+
+This uses HA's native `shell_command` + `template switch` — no custom integration required.
+
+使用 HA 原生的 `shell_command` + `template switch` — 不需要自訂整合。
+
+#### Step 1: Deploy Helper Script / 步驟1：部署輔助腳本
+
+Copy `power_sequencer/power_sequencer.py` to `/config/scripts/` inside HA:
+
+將 `power_sequencer/power_sequencer.py` 複製到 HA 的 `/config/scripts/`：
+
+```bash
+# From SSH addon terminal / 從 SSH 附加元件終端
+docker exec homeassistant mkdir -p /config/scripts
+
+# Copy the script (pipe via SSH since SCP may not work in HAOS)
+cat power_sequencer.py | docker exec -i homeassistant tee /config/scripts/power_sequencer.py > /dev/null
+docker exec homeassistant chmod +x /config/scripts/power_sequencer.py
+```
+
+#### Step 2: Add to configuration.yaml / 步驟2：加入 configuration.yaml
+
+Add the shell commands and template switches. See `power_sequencer/configuration.yaml` for the full config, or add:
+
+加入 shell command 和 template switch。完整設定請參閱 `power_sequencer/configuration.yaml`，或加入：
+
+```yaml
+# Shell commands for each channel ON/OFF
+shell_command:
+  power_seq_ch1_on:  "python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 1 on"
+  power_seq_ch1_off: "python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 1 off"
+  power_seq_ch2_on:  "python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 2 on"
+  power_seq_ch2_off: "python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 2 off"
+  # ... ch3 through ch8 (same pattern)
+  power_seq_all_on:  "python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 0 on"
+  power_seq_all_off: "python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 0 off"
+
+# Template switches (appear as plug entities in dashboard)
+switch:
+  - platform: template
+    switches:
+      power_sequencer_ch1:
+        friendly_name: "Power Sequencer Ch1"
+        unique_id: power_sequencer_ch1
+        icon_template: "mdi:power-plug"
+        turn_on:
+          service: shell_command.power_seq_ch1_on
+        turn_off:
+          service: shell_command.power_seq_ch1_off
+      # ... ch2 through ch8 (same pattern)
+```
+
+#### Step 3: Restart and Verify / 步驟3：重啟並驗證
+
+```bash
+# Validate configuration / 驗證設定
+ha core check
+
+# Restart HA Core / 重啟 HA Core
+ha core restart
+
+# After restart, 8 switch entities will appear:
+# 重啟後會出現 8 個 switch 實體：
+#   switch.power_sequencer_ch1
+#   switch.power_sequencer_ch2
+#   ...
+#   switch.power_sequencer_ch8
+```
+
+### Dashboard / 儀表板
+
+After restart, the 8 switches appear automatically in HA. You can:
+
+重啟後，8 個開關會自動出現在 HA 中。你可以：
+
+- Toggle them directly from the dashboard / 直接從儀表板切換
+- Add them to any dashboard card / 加入任何儀表板卡片
+- Use in automations and scripts / 在自動化和腳本中使用
+- Group them logically / 依邏輯分組
+
+Each switch shows as a **plug icon** (`mdi:power-plug`) with optimistic state tracking (state is tracked in HA since the device has no status feedback).
+
+每個開關顯示為**插頭圖示** (`mdi:power-plug`)，使用樂觀狀態追蹤（因裝置無狀態回饋，狀態由 HA 追蹤）。
+
+### Quick CLI Test / 快速 CLI 測試
+
+```bash
+# From SSH addon / 從 SSH 附加元件
+# Turn on channel 1 / 開啟通道 1
+docker exec homeassistant python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 1 on
+
+# Turn off channel 1 / 關閉通道 1
+docker exec homeassistant python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 1 off
+
+# All channels on / 所有通道開
+docker exec homeassistant python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 0 on
+
+# Sequential power on / 順序開啟
+docker exec homeassistant python3 /config/scripts/power_sequencer.py /dev/ttyUSB0 1 13 on
+```
+
+---
+
 ## Troubleshooting / 故障排除
 
 | Problem / 問題 | Cause / 原因 | Solution / 解決方案 |
@@ -601,6 +779,8 @@ docker run --rm --privileged --net=host alpine sh -c '
 | Cannot mount boot partition / 無法掛載開機分區 | Container lacks privileges / 容器缺少權限 | Use `docker run --privileged -v /dev/mmcblk0p1:/dev/mmcblk0p1 alpine` |
 | CAN shows BUS-OFF / CAN 顯示 BUS-OFF | No termination or wiring error / 無終端電阻或接線錯誤 | Check 120Ω termination and CAN-H/CAN-L wiring / 檢查終端電阻和接線 |
 | High CPU from `irq/188-spi1.0` | SC16IS752 IRQ handling / SC16IS752 中斷處理 | Known upstream issue; monitor with `top` / 已知上游問題 |
+| Power Sequencer not responding / 電源時序器無反應 | Wrong serial port or address / 序列埠或地址錯誤 | Verify `/dev/ttyUSB0` exists; check machine address DIP switch / 確認裝置存在及地址開關 |
+| Switch state stuck on "unknown" / 開關狀態顯示 unknown | Never toggled yet / 尚未操作過 | Toggle the switch once; state is optimistic (tracked in HA) / 操作一次即可，狀態由 HA 追蹤 |
 
 ---
 
@@ -612,7 +792,10 @@ docker run --rm --privileged --net=host alpine sh -c '
 ├── config_txt_example.txt     ← Verified config.txt overlays / 已驗證的 config.txt overlay
 ├── test_all_interfaces.sh     ← Automated test script / 自動化測試腳本
 ├── TEST_RESULTS.md            ← Detailed test results / 詳細測試結果
-└── SETUP_GUIDE.md             ← Step-by-step setup guide / 逐步設置指南
+├── SETUP_GUIDE.md             ← Step-by-step setup guide / 逐步設置指南
+└── power_sequencer/           ← Power Sequencer RS232 control / 電源時序器 RS232 控制
+    ├── power_sequencer.py     ← Helper script (deploy to /config/scripts/) / 輔助腳本
+    └── configuration.yaml     ← HA config snippet / HA 設定片段
 ```
 
 ---
